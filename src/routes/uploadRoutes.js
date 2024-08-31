@@ -1,42 +1,28 @@
+// src/routes/uploadRoutes.js
 const express = require('express');
 const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
 const csvParser = require('csv-parser');
+const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
+const connection = require('../db'); // Import the database connection
 
 const router = express.Router();
 
-// Configure multer for file upload
 const storage = multer.diskStorage({
-    destination: function (req, file, cb) {
-        cb(null, path.join(__dirname, '../uploads'));
+    destination: (req, file, cb) => {
+        cb(null, 'src/uploads');
     },
-    filename: function (req, file, cb) {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, uniqueSuffix + '-' + file.originalname);
+    filename: (req, file, cb) => {
+        cb(null, Date.now() + '-' + file.originalname);
     }
 });
 
-const upload = multer({
-    storage: storage,
-    fileFilter: function (req, file, cb) {
-        const ext = path.extname(file.originalname);
-        if (ext !== '.csv') {
-            return cb(new Error('Only CSV files are allowed'), false);
-        }
-        cb(null, true);
-    }
-}).single('file');
+const upload = multer({ storage: storage }).single('file');
 
-// In-memory storage for demonstration purposes
-const requestStatuses = {};
-
-// Define the upload route
 router.post('/upload', (req, res) => {
-    upload(req, res, function (err) {
+    upload(req, res, async (err) => {
         if (err) {
-            return res.status(400).json({ message: err.message });
+            return res.status(500).json({ message: 'File upload error' });
         }
 
         if (!req.file) {
@@ -46,33 +32,48 @@ router.post('/upload', (req, res) => {
         const filePath = req.file.path;
         const requestId = uuidv4(); // Generate a unique request ID
 
-        // Save the request ID and initial status
-        requestStatuses[requestId] = {
-            status: 'Processing', // Initial status
-            filePath: filePath
-        };
-
-        // Check if the CSV contains the correct headers
-        const headers = ['S. No.', 'Product Name', 'Input Image Urls'];
+        // Validate CSV file headers and parse data
         let validHeaders = false;
+        const products = [];
 
-        const readStream = fs.createReadStream(filePath);
-        readStream.pipe(csvParser())
-            .on('headers', (csvHeaders) => {
-                validHeaders = headers.every(header => csvHeaders.includes(header));
+        fs.createReadStream(filePath)
+            .pipe(csvParser())
+            .on('headers', (headers) => {
+                validHeaders = headers.includes('S. No.') && headers.includes('Product Name') && headers.includes('Input Image Urls');
             })
             .on('data', (row) => {
-                // We can process each row here if needed
+                if (validHeaders) {
+                    products.push({
+                        requestId: requestId,
+                        serialNumber: row['S. No.'],
+                        productName: row['Product Name'],
+                        inputImageUrls: row['Input Image Urls'],
+                        outputImageUrls: '' // Initially empty
+                    });
+                }
             })
-            .on('end', () => {
+            .on('end', async () => {
                 if (!validHeaders) {
-                    // Remove the request ID if headers are invalid
-                    delete requestStatuses[requestId];
                     return res.status(400).json({ message: 'Invalid CSV headers' });
                 }
 
-                // If everything is okay, return the request ID
-                res.status(200).json({ message: 'File uploaded and validated successfully', requestId: requestId });
+                // Insert request info into the database
+                connection.query('INSERT INTO requests (id, status) VALUES (?, ?)', [requestId, 'Processing'], (err) => {
+                    if (err) return res.status(500).json({ message: 'Error inserting request' });
+
+                    // Insert product data into the database
+                    products.forEach((product) => {
+                        connection.query(
+                            'INSERT INTO products (request_id, serial_number, product_name, input_image_urls, output_image_urls) VALUES (?, ?, ?, ?, ?)',
+                            [product.requestId, product.serialNumber, product.productName, product.inputImageUrls, product.outputImageUrls],
+                            (err) => {
+                                if (err) return res.status(500).json({ message: 'Error inserting product data' });
+                            }
+                        );
+                    });
+
+                    res.status(200).json({ message: 'File uploaded and data saved successfully', requestId: requestId });
+                });
             })
             .on('error', (error) => {
                 res.status(500).json({ message: 'Error reading the CSV file' });
