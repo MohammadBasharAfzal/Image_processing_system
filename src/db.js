@@ -1,4 +1,5 @@
-const mysql = require('mysql2');
+// src/db.js
+const mysql = require('mysql2/promise'); // Use the promise version of mysql2
 
 // Create a connection pool for MySQL
 const pool = mysql.createPool({
@@ -8,15 +9,12 @@ const pool = mysql.createPool({
     database: 'image_processing_db' // Your DB
 });
 
-// Promisify the query function for easier async/await usage
-const promisePool = pool.promise();
-
-// Function to update image URL in the `products` table
-async function updateImageUrl(productId, imageUrl) {
+// Function to update image URL in the database
+async function updateImageUrl(serialNumber, outputImageUrl) {
     try {
-        const [results] = await promisePool.query(
-            'UPDATE products SET output_image_urls = ? WHERE id = ?',
-            [imageUrl, productId]
+        const [results] = await pool.query(
+            'UPDATE products SET output_image_urls = ? WHERE serial_number = ?', // Assuming `serial_number` is the primary key
+            [outputImageUrl, serialNumber]
         );
         return results;
     } catch (error) {
@@ -27,5 +25,6 @@ async function updateImageUrl(productId, imageUrl) {
 console.log('Connected to the MySQL database.');
 
 module.exports = {
+    pool,
     updateImageUrl
 };

@@ -1,12 +1,14 @@
+// src/routes/uploadRoutes.js
 const express = require('express');
 const multer = require('multer');
 const csvParser = require('csv-parser');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
-const { updateImageUrl } = require('../db'); // Import the updateImageUrl function
+const { pool, updateImageUrl } = require('../db'); // Import the pool and updateImageUrl function
 
 const router = express.Router();
 
+// Multer storage configuration
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
         cb(null, 'src/uploads'); // Ensure this directory exists
@@ -18,6 +20,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage: storage }).single('file');
 
+// Endpoint to upload CSV and process images
 router.post('/upload', (req, res) => {
     upload(req, res, async (err) => {
         if (err) {
@@ -58,24 +61,21 @@ router.post('/upload', (req, res) => {
 
                 try {
                     // Insert request info into the database
-                    await new Promise((resolve, reject) => {
-                        // Insert request information as needed
-                        resolve(); // Modify this as needed
-                    });
+                    await pool.query('INSERT INTO requests (id, status) VALUES (?, ?)', [requestId, 'Processing']);
 
-                    // Update product data in the database
-                    await Promise.all(products.map((product) => {
-                        return updateImageUrl(product.serialNumber, product.outputImageUrls) // Assuming `serialNumber` matches `id` in products table
-                            .catch((err) => {
-                                console.error('Error updating product:', err);
-                                throw err;
-                            });
-                    }));
+                    // Insert product data into the database
+                    for (const product of products) {
+                        await pool.query(
+                            'INSERT INTO products (request_id, serial_number, product_name, input_image_urls, output_image_urls) VALUES (?, ?, ?, ?, ?)',
+                            [product.requestId, product.serialNumber, product.productName, product.inputImageUrls, product.outputImageUrls]
+                        );
+                    }
 
                     res.status(200).json({ message: 'File uploaded and data saved successfully', requestId: requestId });
+
                 } catch (error) {
                     console.error('Database error:', error);
-                    res.status(500).json({ message: 'Error inserting data into the database' });
+                    res.status(500).json({ message: 'Error inserting data into the database', error: error.message });
                 }
             })
             .on('error', (error) => {
@@ -83,6 +83,38 @@ router.post('/upload', (req, res) => {
                 res.status(500).json({ message: 'Error reading the CSV file' });
             });
     });
+});
+
+// Endpoint to get status of a request
+router.get('/status/:request_id', async (req, res) => {
+    const requestId = req.params.request_id;
+
+    // Queries to get status and product details
+    const getRequestStatusQuery = 'SELECT id, status FROM requests WHERE id = ?';
+    const getProductsDetailsQuery = 'SELECT serial_number, product_name, input_image_urls, output_image_urls FROM products WHERE request_id = ?';
+
+    try {
+        // Get request status
+        const [requestRows] = await pool.query(getRequestStatusQuery, [requestId]);
+        
+        if (requestRows.length === 0) {
+            return res.status(404).json({ message: 'Request not found' });
+        }
+
+        const requestStatus = requestRows[0];
+
+        // Get product details
+        const [productRows] = await pool.query(getProductsDetailsQuery, [requestId]);
+
+        res.status(200).json({
+            requestId: requestStatus.id,
+            status: requestStatus.status,
+            products: productRows
+        });
+    } catch (error) {
+        console.error('Database query error:', error);
+        res.status(500).json({ message: 'Error retrieving status', error: error.message });
+    }
 });
 
 module.exports = router;
