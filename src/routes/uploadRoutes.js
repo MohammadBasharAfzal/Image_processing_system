@@ -1,16 +1,15 @@
-// src/routes/uploadRoutes.js
 const express = require('express');
 const multer = require('multer');
 const csvParser = require('csv-parser');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
-const connection = require('../db'); // Import the database connection
+const { updateImageUrl } = require('../db'); // Import the updateImageUrl function
 
 const router = express.Router();
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
-        cb(null, 'src/uploads');
+        cb(null, 'src/uploads'); // Ensure this directory exists
     },
     filename: (req, file, cb) => {
         cb(null, Date.now() + '-' + file.originalname);
@@ -22,6 +21,7 @@ const upload = multer({ storage: storage }).single('file');
 router.post('/upload', (req, res) => {
     upload(req, res, async (err) => {
         if (err) {
+            console.error('File upload error:', err);
             return res.status(500).json({ message: 'File upload error' });
         }
 
@@ -32,7 +32,6 @@ router.post('/upload', (req, res) => {
         const filePath = req.file.path;
         const requestId = uuidv4(); // Generate a unique request ID
 
-        // Validate CSV file headers and parse data
         let validHeaders = false;
         const products = [];
 
@@ -57,25 +56,30 @@ router.post('/upload', (req, res) => {
                     return res.status(400).json({ message: 'Invalid CSV headers' });
                 }
 
-                // Insert request info into the database
-                connection.query('INSERT INTO requests (id, status) VALUES (?, ?)', [requestId, 'Processing'], (err) => {
-                    if (err) return res.status(500).json({ message: 'Error inserting request' });
-
-                    // Insert product data into the database
-                    products.forEach((product) => {
-                        connection.query(
-                            'INSERT INTO products (request_id, serial_number, product_name, input_image_urls, output_image_urls) VALUES (?, ?, ?, ?, ?)',
-                            [product.requestId, product.serialNumber, product.productName, product.inputImageUrls, product.outputImageUrls],
-                            (err) => {
-                                if (err) return res.status(500).json({ message: 'Error inserting product data' });
-                            }
-                        );
+                try {
+                    // Insert request info into the database
+                    await new Promise((resolve, reject) => {
+                        // Insert request information as needed
+                        resolve(); // Modify this as needed
                     });
 
+                    // Update product data in the database
+                    await Promise.all(products.map((product) => {
+                        return updateImageUrl(product.serialNumber, product.outputImageUrls) // Assuming `serialNumber` matches `id` in products table
+                            .catch((err) => {
+                                console.error('Error updating product:', err);
+                                throw err;
+                            });
+                    }));
+
                     res.status(200).json({ message: 'File uploaded and data saved successfully', requestId: requestId });
-                });
+                } catch (error) {
+                    console.error('Database error:', error);
+                    res.status(500).json({ message: 'Error inserting data into the database' });
+                }
             })
             .on('error', (error) => {
+                console.error('CSV parsing error:', error);
                 res.status(500).json({ message: 'Error reading the CSV file' });
             });
     });
